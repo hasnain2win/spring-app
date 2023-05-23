@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+<head>
+    <title>Employee Details</title>
+    <style>
+        table {
+            border-collapse: collapse;
+        }
+
+        th, td {
+            border: 1px solid black;
+            padding: 8px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Employee Details</h1>
+    <table>
+        <tr>
+            <!-- Display column names -->
+            <th th:each="columnName : ${columnNames}" th:text="${columnName.replace('#', '')}"></th>
+        </tr>
+    </table>
+
+  <!--   <script th:inline="javascript">
+        /*<![CDATA[*/
+        var columnCount = /*[[${#lists.size(columnNames)}]]*/ 0;
+        var columns = /*[[${columnNames}]]*/ [];
+        for (var i = 0; i < columnCount; i++) {
+            var columnNameValue = columns[i];
+            console.log(columnNameValue);
+        }
+        /*]]>*/
+    </script> -->
+
+    <table>
+        <tr th:each="employee : ${employees}">
+            <!-- Display employee details -->
+            <td th:text="${employee.id}"></td>
+            <td th:text="${employee.name}"></td>
+            <td th:text="${employee.designation}"></td>
+        </tr>
+    </table>
+</body>
+</html>
