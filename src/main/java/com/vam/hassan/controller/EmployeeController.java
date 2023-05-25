@@ -30,7 +30,6 @@ public class EmployeeController {
 	@Autowired
 	EmployeeRepository employeeRepository;
 
-	
 	@GetMapping("/employee-details")
 	@PreAuthorize("hasAuthority('ROLE_ADMIN')")
 	public String getEmployeeDetails(Model model) {
@@ -43,6 +42,12 @@ public class EmployeeController {
 		model.addAttribute("employees", employees);
 
 		return "employees";
+	}
+
+	@GetMapping("/employee")
+	@PreAuthorize("hasAuthority('ROLE_ADMIN')")
+	public ResponseEntity<Object> getAllEmployee() {
+		return new ResponseEntity<Object>(employeeService.getAllEmploye(), HttpStatus.OK);
 	}
 
 	@PostMapping("/save")
