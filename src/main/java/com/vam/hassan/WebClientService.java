@@ -25,10 +25,12 @@ import org.springframework.web.client.RestTemplate;
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.Collections;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 
 @Service
 public class EPMPServiceImpl implements EPMPService {
-   
+
     @Autowired
     private RestTemplate restTemplate;
     @Autowired
@@ -38,10 +40,16 @@ public class EPMPServiceImpl implements EPMPService {
 
     private final Logger logger = LogManager.getLogger(this.getClass());
 
+    @Value("${hemiAccessTokenEndPoint}")
+    private String hemiAccessTokenEndPoint;
+    @Value("${epmpPreferencesSearchEndpoint}")
+    private String epmpPreferencesSearchEndpoint;
+    @Value("${GetContextLookupEndpoint}")
+    private String GetContextLookupEndpoint;
+
     @Override
     public EpmpPreferencesResponse getEpmpPreferences(EpmpPreferencesRequestDTO request, String profileType) {
         logger.info("Started getEpmpPreferences(): EPMPServiceImpl");
-        EpmpPreferencesResponse result = new EpmpPreferencesResponse();
 
         if (isInvalidRequest(request)) {
             logger.error("Invalid request, one or more parameters are missing or invalid");
@@ -57,26 +65,35 @@ public class EPMPServiceImpl implements EPMPService {
                 return null;
             }
 
-            HttpHeaders headers = createHeaders(token);
-            ContextLookHemiResponse contextResponse = getContextLookupHemiApi(createContextRequest(request, profileType));
+            // Call getContextLookupHemiApi asynchronously and set timeout
+            ContextLookHemiRequest contextRequest = createContextRequest(request, profileType);
+            CompletableFuture<ContextLookHemiResponse> contextFuture = getContextLookupHemiApiAsync(contextRequest);
 
-            if (contextResponse != null && contextResponse.getContext() != null && StringUtils.isNotBlank(contextResponse.getContext().getBrand())) {
-                logger.info("Brand found in context response: {}", StringEscapeUtils.escapeJava(contextResponse.getContext().getBrand()));
+            // Wait for context lookup response with a timeout
+            ContextLookHemiResponse contextResponse = contextFuture.get(1, TimeUnit.SECONDS);
+
+            if (contextResponse != null && contextResponse.getContext() != null &&
+                StringUtils.isNotBlank(contextResponse.getContext().getBrand())) {
+
+                HttpHeaders headers = createHeaders(token);
                 headers.set(APIConstants.BRAND_HEADER, contextResponse.getContext().getBrand());
+
+                HttpEntity<EpmpPreferencesRequest> requestEntity = new HttpEntity<>(requestBody, headers);
+                ResponseEntity<String> responseEntity = restTemplate.exchange(
+                        epmpPreferencesSearchEndpoint, HttpMethod.POST, requestEntity, String.class);
+
+                EpmpPreferencesResponse result = new EpmpPreferencesResponse();
+                handleResponse(responseEntity, result);
+                return result;
             } else {
                 logger.error("Brand not found in context response");
                 return null;
             }
-
-            HttpEntity<EpmpPreferencesRequest> requestEntity = new HttpEntity<>(requestBody, headers);
-            ResponseEntity<String> responseEntity = restTemplate.exchange(epmpPreferencesSearchEndpoint, HttpMethod.POST, requestEntity, String.class);
-            handleResponse(responseEntity, result);
         } catch (Exception e) {
-            logger.info("Error occurred while calling EPMP service, Error Message :: {}", e.getMessage());
+            logger.error("Error occurred while calling EPMP service, Error Message :: {}", e.getMessage());
         }
 
-        logger.info("Completed getEpmpPreferences(): EPMPServiceImpl");
-        return result;
+        return null;
     }
 
     private boolean isInvalidRequest(EpmpPreferencesRequestDTO request) {
@@ -95,13 +112,6 @@ public class EPMPServiceImpl implements EPMPService {
         return headers;
     }
 
-    /**
-     * Creates an EpmpPreferencesRequest based on the provided member patient details and profile type.
-     *
-     * @param request     the details of the member patient
-     * @param profileType the type of profile (e.g., PBM or Pharmacy)
-     * @return an EpmpPreferencesRequest containing the EPMP preferences for the given member patient, or null if the profile type is invalid
-     */
     private EpmpPreferencesRequest createRequestBody(EpmpPreferencesRequestDTO request, String profileType) {
         if (StringUtils.equalsIgnoreCase(profileType, APIConstants.PBM_PROFILE_TYPE) && StringUtils.isNotBlank(request.getMemberId())
                 && StringUtils.isNotBlank(request.getInstanceId())) {
@@ -151,50 +161,29 @@ public class EPMPServiceImpl implements EPMPService {
         return node.isMissingNode() ? null : node.asText();
     }
 
-    /**
-     * Fetches context lookup information from the HEMI API.
-     *
-     * @param contextLookHemiRequest the request object containing the necessary details for the context lookup
-     * @return the response from the HEMI API containing context lookup information
-     */
+    // Asynchronous method to fetch context lookup information from the HEMI API
+    public CompletableFuture<ContextLookHemiResponse> getContextLookupHemiApiAsync(ContextLookHemiRequest contextLookHemiRequest) {
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                logger.info("Start EPMPServiceImpl: getContextLookupHemiApiAsync method started");
+                HttpHeaders requestHeaders = createHeadersForHemiApi(contextLookHemiRequest.getInputMetaData().getExternalCorrelationId());
+                HttpEntity<ContextLookHemiRequest> requestEntity = new HttpEntity<>(contextLookHemiRequest, requestHeaders);
 
-    public ContextLookHemiResponse getContextLookupHemiApi(ContextLookHemiRequest contextLookHemiRequest) {
-        logger.info("Start EPMPServiceImpl: getContextLookupHemiApi method started");
-        LocalDateTime initialTime = LocalDateTime.now();
-        String correlationId = StringEscapeUtils.escapeJava(contextLookHemiRequest.getInputMetaData().getExternalCorrelationId());
+                ResponseEntity<ContextLookHemiResponse> response = restTemplate.exchange(
+                        GetContextLookupEndpoint, HttpMethod.POST, requestEntity, ContextLookHemiResponse.class);
+                return response.getBody();
+            } catch (Exception e) {
+                logger.error("Error fetching getContextLookupHemiApi API: {}", e.getMessage());
+                return null;
+            }
+        });
+    }
 
-        HttpHeaders requestHeaders = new HttpHeaders();
-        requestHeaders.setContentType(MediaType.APPLICATION_JSON);
-        String token = getAccessToken.getToken(hemiAccessTokenEndPoint, hemiAccessTokenReq);
-        requestHeaders.set("Authorization", "Bearer " + token);
-        requestHeaders.setAccept(Collections.singletonList(MediaType.APPLICATION_JSON));
-
-        InputMetaData inputMetaData = new InputMetaData();
-        inputMetaData.setConsumerAppId(this.consumerAppId);
-        inputMetaData.setConsumerAppType(this.consumerAppType);
-        inputMetaData.setConsumerType(this.consumerType);
-        inputMetaData.setExternalCorrelationId(correlationId);
-
-        ContextLookHemiRequest requestBody = ContextLookHemiRequest.builder()
-                .accountId(contextLookHemiRequest.getAccountId())
-                .carrierId(contextLookHemiRequest.getCarrierId())
-                .command(APIConstants.EPMP_UI_COMMAND)
-                .groupId(contextLookHemiRequest.getGroupId())
-                .id(contextLookHemiRequest.getId())
-                .idType(APIConstants.EPMP_UI_ID_TYPE)
-                .inputMetaData(inputMetaData)
-                .build();
-
-        HttpEntity<ContextLookHemiRequest> requestEntity = new HttpEntity<>(requestBody, requestHeaders);
-        ResponseEntity<ContextLookHemiResponse> contextLookHemiResponse = null;
-
-        try {
-            contextLookHemiResponse = restTemplate.exchange(GetContextLookupEndpoint, HttpMethod.POST, requestEntity, ContextLookHemiResponse.class);
-            logger.info("getContextLookupHemiApi method completed in: {}", ChronoUnit.MILLIS.between(initialTime, LocalDateTime.now()));
-        } catch (Exception exception) {
-            logger.error("Error fetching getContextLookupHemiApi API: {} and CorrelationId: {}", exception.getMessage(), correlationId);
-        }
-
-        return contextLookHemiResponse.getBody();
+    private HttpHeaders createHeadersForHemiApi(String correlationId) {
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        headers.setBearerAuth(getAccessToken.getToken(hemiAccessTokenEndPoint, hemiAccessTokenReq));
+        headers.setAccept(Collections.singletonList(MediaType.APPLICATION_JSON));
+        return headers;
     }
 }
